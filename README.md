@@ -53,3 +53,15 @@ python scripts/check_user_service.py
 ```powershell
 python scripts/check_registration.py
 ```
+
+Проверить сервис управления комнатами:
+
+```powershell
+python scripts/check_rooms.py
+```
+
+Назначить администратора:
+
+```powershell
+python scripts/set_admin.py <telegram_id_or_email> true
+```

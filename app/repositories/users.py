@@ -21,6 +21,11 @@ async def get_user_by_email(session: AsyncSession, email: str) -> User | None:
     return result.scalar_one_or_none()
 
 
+async def list_users(session: AsyncSession) -> list[User]:
+    result = await session.execute(select(User).order_by(User.user_id))
+    return list(result.scalars().all())
+
+
 async def add_user(
     session: AsyncSession,
     *,

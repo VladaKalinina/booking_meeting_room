@@ -1,16 +1,26 @@
 from aiogram import F, Router
 from aiogram.filters import Command, CommandStart
 from aiogram.fsm.context import FSMContext
-from aiogram.types import KeyboardButton, Message, ReplyKeyboardMarkup, ReplyKeyboardRemove
+from aiogram.types import (
+    CallbackQuery,
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+    KeyboardButton,
+    Message,
+    ReplyKeyboardMarkup,
+    ReplyKeyboardRemove,
+)
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.repositories.users import get_user_by_telegram_id
+from app.services.rooms import create_room, deactivate_room, get_rooms
 from app.services.users import (
     is_profile_complete,
     is_valid_email,
     register_or_update_user_profile,
 )
 from app.states.registration import RegistrationState
+from app.states.rooms import RoomCreationState
 
 router = Router()
 
@@ -23,6 +33,8 @@ ROOMS_MANAGEMENT_TEXT = "Управление комнатами"
 ANALYTICS_TEXT = "Аналитика"
 USERS_MANAGEMENT_TEXT = "Управление пользователями"
 CANCEL_TEXT = "Отмена"
+ROOM_ADD_CALLBACK = "rooms:add"
+ROOM_DEACTIVATE_PREFIX = "rooms:deactivate:"
 
 
 def main_menu_keyboard(*, is_admin: bool = False) -> ReplyKeyboardMarkup:
@@ -75,6 +87,56 @@ async def send_main_menu(message: Message, *, full_name: str, is_admin: bool) ->
             "Выбери действие в меню."
         ),
         reply_markup=main_menu_keyboard(is_admin=is_admin),
+    )
+
+
+async def get_current_user(message: Message, session: AsyncSession):
+    if not message.from_user:
+        return None
+    return await get_user_by_telegram_id(session, message.from_user.id)
+
+
+async def get_current_user_from_callback(callback: CallbackQuery, session: AsyncSession):
+    return await get_user_by_telegram_id(session, callback.from_user.id)
+
+
+def rooms_management_keyboard(rooms) -> InlineKeyboardMarkup:
+    keyboard = [[InlineKeyboardButton(text="Добавить комнату", callback_data=ROOM_ADD_CALLBACK)]]
+
+    for room in rooms:
+        if room.is_active:
+            keyboard.append(
+                [
+                    InlineKeyboardButton(
+                        text=f"Деактивировать #{room.room_id}",
+                        callback_data=f"{ROOM_DEACTIVATE_PREFIX}{room.room_id}",
+                    )
+                ]
+            )
+
+    return InlineKeyboardMarkup(inline_keyboard=keyboard)
+
+
+def format_rooms_text(rooms) -> str:
+    if not rooms:
+        return "Переговорные комнаты пока не добавлены."
+
+    lines = ["Переговорные комнаты:"]
+    for room in rooms:
+        status = "активна" if room.is_active else "неактивна"
+        lines.append(
+            f"#{room.room_id}: {room.name}, {room.location}, "
+            f"вместимость: {room.capacity}, статус: {status}"
+        )
+
+    return "\n".join(lines)
+
+
+async def send_rooms_management(message: Message, session: AsyncSession) -> None:
+    rooms = await get_rooms(session)
+    await message.answer(
+        format_rooms_text(rooms),
+        reply_markup=rooms_management_keyboard(rooms),
     )
 
 
@@ -170,6 +232,132 @@ async def process_email(
     await send_main_menu(message, full_name=user.full_name, is_admin=user.is_admin)
 
 
+@router.message(F.text == ROOMS_MANAGEMENT_TEXT)
+async def rooms_management(message: Message, session: AsyncSession) -> None:
+    user = await get_current_user(message, session)
+    if not user or not user.is_admin:
+        await message.answer("Недостаточно прав для управления комнатами.")
+        return
+
+    await send_rooms_management(message, session)
+
+
+@router.callback_query(F.data == ROOM_ADD_CALLBACK)
+async def start_room_creation(
+    callback: CallbackQuery,
+    session: AsyncSession,
+    state: FSMContext,
+) -> None:
+    user = await get_current_user_from_callback(callback, session)
+    if not user or not user.is_admin:
+        await callback.answer("Недостаточно прав.", show_alert=True)
+        return
+
+    await state.set_state(RoomCreationState.waiting_name)
+    await callback.answer()
+    if callback.message:
+        await callback.message.answer(
+            "Введите название переговорной комнаты.",
+            reply_markup=cancel_keyboard(),
+        )
+
+
+@router.message(RoomCreationState.waiting_name)
+async def process_room_name(message: Message, state: FSMContext) -> None:
+    name = (message.text or "").strip()
+    if not name:
+        await message.answer("Название не может быть пустым.")
+        return
+    if len(name) > 100:
+        await message.answer("Название должно быть не длиннее 100 символов.")
+        return
+
+    await state.update_data(room_name=name)
+    await state.set_state(RoomCreationState.waiting_location)
+    await message.answer("Введите расположение комнаты, например: 3 этаж, офис 305.")
+
+
+@router.message(RoomCreationState.waiting_location)
+async def process_room_location(message: Message, state: FSMContext) -> None:
+    location = (message.text or "").strip()
+    if not location:
+        await message.answer("Расположение не может быть пустым.")
+        return
+    if len(location) > 100:
+        await message.answer("Расположение должно быть не длиннее 100 символов.")
+        return
+
+    await state.update_data(room_location=location)
+    await state.set_state(RoomCreationState.waiting_capacity)
+    await message.answer("Введите вместимость комнаты числом.")
+
+
+@router.message(RoomCreationState.waiting_capacity)
+async def process_room_capacity(
+    message: Message,
+    session: AsyncSession,
+    state: FSMContext,
+) -> None:
+    capacity_text = (message.text or "").strip()
+    if not capacity_text.isdigit():
+        await message.answer("Вместимость нужно указать целым числом.")
+        return
+
+    data = await state.get_data()
+
+    try:
+        room = await create_room(
+            session,
+            name=data["room_name"],
+            location=data["room_location"],
+            capacity=int(capacity_text),
+        )
+        await session.commit()
+    except ValueError as error:
+        await session.rollback()
+        await message.answer(str(error))
+        return
+
+    await state.clear()
+    await message.answer(
+        f"Комната #{room.room_id} добавлена.",
+        reply_markup=ReplyKeyboardRemove(),
+    )
+    await send_rooms_management(message, session)
+
+
+@router.callback_query(F.data.startswith(ROOM_DEACTIVATE_PREFIX))
+async def deactivate_room_callback(
+    callback: CallbackQuery,
+    session: AsyncSession,
+) -> None:
+    user = await get_current_user_from_callback(callback, session)
+    if not user or not user.is_admin:
+        await callback.answer("Недостаточно прав.", show_alert=True)
+        return
+
+    room_id_text = callback.data.removeprefix(ROOM_DEACTIVATE_PREFIX) if callback.data else ""
+    if not room_id_text.isdigit():
+        await callback.answer("Некорректный идентификатор комнаты.", show_alert=True)
+        return
+
+    try:
+        room = await deactivate_room(session, int(room_id_text))
+        await session.commit()
+    except ValueError as error:
+        await session.rollback()
+        await callback.answer(str(error), show_alert=True)
+        return
+
+    await callback.answer(f"Комната #{room.room_id} деактивирована.")
+    if callback.message:
+        rooms = await get_rooms(session)
+        await callback.message.edit_text(
+            format_rooms_text(rooms),
+            reply_markup=rooms_management_keyboard(rooms),
+        )
+
+
 @router.message(F.text == HELP_TEXT)
 async def help_message(message: Message) -> None:
     await message.answer(
@@ -188,7 +376,6 @@ async def feature_stub(message: Message) -> None:
     F.text.in_(
         {
             ALL_RESERVATIONS_TEXT,
-            ROOMS_MANAGEMENT_TEXT,
             ANALYTICS_TEXT,
             USERS_MANAGEMENT_TEXT,
         }
