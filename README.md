@@ -60,6 +60,12 @@ python scripts/check_registration.py
 python scripts/check_rooms.py
 ```
 
+Проверить сервис управления оборудованием:
+
+```powershell
+python scripts/check_equipment.py
+```
+
 Назначить администратора:
 
 ```powershell
