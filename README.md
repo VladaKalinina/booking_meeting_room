@@ -27,3 +27,23 @@ TELEGRAM_BOT_TOKEN=your_token
 ```powershell
 python main.py
 ```
+
+## База данных
+
+Применить миграции:
+
+```powershell
+python -m alembic upgrade head
+```
+
+Проверить подключение и созданные таблицы:
+
+```powershell
+python scripts/check_db.py
+```
+
+Проверить сервис регистрации пользователя:
+
+```powershell
+python scripts/check_user_service.py
+```

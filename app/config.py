@@ -8,6 +8,7 @@ from dotenv import load_dotenv
 class Config:
     telegram_bot_token: str
     telegram_proxy_url: str | None = None
+    database_url: str | None = None
 
 
 def load_config() -> Config:
@@ -20,8 +21,10 @@ def load_config() -> Config:
         )
 
     telegram_proxy_url = os.getenv("TELEGRAM_PROXY_URL") or None
+    database_url = os.getenv("DATABASE_URL") or None
 
     return Config(
         telegram_bot_token=telegram_bot_token,
         telegram_proxy_url=telegram_proxy_url,
+        database_url=database_url,
     )

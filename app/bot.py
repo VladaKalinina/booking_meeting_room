@@ -5,6 +5,7 @@ from aiogram.enums import ParseMode
 
 from app.config import Config
 from app.handlers import router
+from app.middlewares.db import DbSessionMiddleware
 
 
 def create_bot(config: Config) -> Bot:
@@ -19,5 +20,6 @@ def create_bot(config: Config) -> Bot:
 
 def create_dispatcher() -> Dispatcher:
     dispatcher = Dispatcher()
+    dispatcher.update.middleware(DbSessionMiddleware())
     dispatcher.include_router(router)
     return dispatcher
