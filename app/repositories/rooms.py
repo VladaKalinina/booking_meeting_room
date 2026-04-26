@@ -1,16 +1,27 @@
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
 from app.db.models import Room
 
 
 async def list_rooms(session: AsyncSession) -> list[Room]:
-    result = await session.execute(select(Room).order_by(Room.room_id))
+    result = await session.execute(
+        select(Room)
+        .options(selectinload(Room.equipment_items))
+        .order_by(Room.room_id)
+        .execution_options(populate_existing=True)
+    )
     return list(result.scalars().all())
 
 
 async def get_room_by_id(session: AsyncSession, room_id: int) -> Room | None:
-    result = await session.execute(select(Room).where(Room.room_id == room_id))
+    result = await session.execute(
+        select(Room)
+        .options(selectinload(Room.equipment_items))
+        .where(Room.room_id == room_id)
+        .execution_options(populate_existing=True)
+    )
     return result.scalar_one_or_none()
 
 

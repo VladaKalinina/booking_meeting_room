@@ -13,6 +13,15 @@ from aiogram.types import (
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.repositories.users import get_user_by_telegram_id
+from app.services.bookings import (
+    BookingDraft,
+    combine_date_time,
+    create_booking,
+    get_available_rooms,
+    parse_equipment_type_ids,
+    parse_time,
+    validate_booking_time,
+)
 from app.services.equipment import (
     attach_equipment_to_room,
     create_equipment,
@@ -36,6 +45,7 @@ from app.states.equipment import (
     EquipmentCreationState,
     EquipmentTypeCreationState,
 )
+from app.states.booking import BookingCreationState
 from app.states.registration import RegistrationState
 from app.states.rooms import RoomCreationState
 from app.states.schedule import ScheduleState
@@ -58,6 +68,7 @@ ROOM_DEACTIVATE_PREFIX = "rooms:deactivate:"
 EQUIPMENT_TYPE_ADD_CALLBACK = "equipment:type:add"
 EQUIPMENT_ADD_CALLBACK = "equipment:add"
 EQUIPMENT_ATTACH_CALLBACK = "equipment:attach"
+BOOKING_ROOM_PREFIX = "booking:room:"
 
 
 def main_menu_keyboard(*, is_admin: bool = False) -> ReplyKeyboardMarkup:
@@ -207,6 +218,42 @@ async def send_equipment_management(message: Message, session: AsyncSession) -> 
         format_equipment_text(types, equipment_items),
         reply_markup=equipment_management_keyboard(),
     )
+
+
+def available_rooms_keyboard(rooms) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text=f"#{room.room_id} {room.name}",
+                    callback_data=f"{BOOKING_ROOM_PREFIX}{room.room_id}",
+                )
+            ]
+            for room in rooms
+        ]
+    )
+
+
+def format_equipment_type_prompt(types) -> str:
+    if not types:
+        return "Типы оборудования пока не добавлены. Напишите 'нет'."
+
+    lines = ["Введите ID нужных типов оборудования через запятую или 'нет':"]
+    lines.extend(f"#{item.type_id}: {item.name}" for item in types)
+    return "\n".join(lines)
+
+
+def format_available_rooms(rooms) -> str:
+    if not rooms:
+        return "Подходящих свободных комнат не найдено."
+
+    lines = ["Подходящие свободные комнаты:"]
+    for room in rooms:
+        lines.append(
+            f"#{room.room_id}: {room.name}, {room.location}, мест: {room.capacity}"
+        )
+    lines.append("\nВыберите комнату для подтверждения бронирования.")
+    return "\n".join(lines)
 
 
 @router.message(CommandStart())
@@ -396,6 +443,217 @@ async def equipment_management(message: Message, session: AsyncSession) -> None:
     if not await ensure_admin_message(message, session):
         return
     await send_equipment_management(message, session)
+
+
+@router.message(F.text == BOOK_ROOM_TEXT)
+async def start_booking_creation(
+    message: Message,
+    session: AsyncSession,
+    state: FSMContext,
+) -> None:
+    user = await get_current_user(message, session)
+    if not user or not is_profile_complete(user):
+        await message.answer("Сначала завершите регистрацию через /start.")
+        return
+
+    await state.set_state(BookingCreationState.waiting_date)
+    await message.answer(
+        "Введите дату встречи в формате ДД.ММ.ГГГГ, например 26.04.2026.",
+        reply_markup=cancel_keyboard(),
+    )
+
+
+@router.message(BookingCreationState.waiting_date)
+async def process_booking_date(message: Message, state: FSMContext) -> None:
+    try:
+        booking_date = parse_schedule_date(message.text or "")
+    except ValueError as error:
+        await message.answer(str(error))
+        return
+
+    await state.update_data(booking_date=booking_date.isoformat())
+    await state.set_state(BookingCreationState.waiting_start_time)
+    await message.answer("Введите время начала в формате ЧЧ:ММ, например 09:30.")
+
+
+@router.message(BookingCreationState.waiting_start_time)
+async def process_booking_start_time(message: Message, state: FSMContext) -> None:
+    try:
+        start_time = parse_time(message.text or "")
+    except ValueError as error:
+        await message.answer(str(error))
+        return
+
+    await state.update_data(start_time=start_time.strftime("%H:%M"))
+    await state.set_state(BookingCreationState.waiting_end_time)
+    await message.answer("Введите время окончания в формате ЧЧ:ММ, например 10:30.")
+
+
+@router.message(BookingCreationState.waiting_end_time)
+async def process_booking_end_time(message: Message, state: FSMContext) -> None:
+    try:
+        end_time = parse_time(message.text or "")
+    except ValueError as error:
+        await message.answer(str(error))
+        return
+
+    data = await state.get_data()
+    start_at = combine_date_time(
+        parse_schedule_date(data["booking_date"]),
+        parse_time(data["start_time"]),
+    )
+    end_at = combine_date_time(parse_schedule_date(data["booking_date"]), end_time)
+
+    try:
+        validate_booking_time(start_at, end_at)
+    except ValueError as error:
+        await message.answer(str(error))
+        return
+
+    await state.update_data(end_time=end_time.strftime("%H:%M"))
+    await state.set_state(BookingCreationState.waiting_purpose)
+    await message.answer("Введите цель встречи.")
+
+
+@router.message(BookingCreationState.waiting_purpose)
+async def process_booking_purpose(message: Message, state: FSMContext) -> None:
+    purpose = " ".join((message.text or "").split())
+    if not purpose:
+        await message.answer("Цель встречи не может быть пустой.")
+        return
+    if len(purpose) > 200:
+        await message.answer("Цель встречи должна быть не длиннее 200 символов.")
+        return
+
+    await state.update_data(purpose=purpose)
+    await state.set_state(BookingCreationState.waiting_capacity)
+    await message.answer("Введите минимальную вместимость комнаты числом.")
+
+
+@router.message(BookingCreationState.waiting_capacity)
+async def process_booking_capacity(
+    message: Message,
+    session: AsyncSession,
+    state: FSMContext,
+) -> None:
+    capacity_text = (message.text or "").strip()
+    if not capacity_text.isdigit():
+        await message.answer("Вместимость нужно указать целым числом.")
+        return
+
+    capacity = int(capacity_text)
+    if capacity <= 0:
+        await message.answer("Вместимость должна быть положительным числом.")
+        return
+
+    await state.update_data(capacity=capacity)
+    await state.set_state(BookingCreationState.waiting_equipment)
+    await message.answer(format_equipment_type_prompt(await get_equipment_types(session)))
+
+
+@router.message(BookingCreationState.waiting_equipment)
+async def process_booking_equipment(
+    message: Message,
+    session: AsyncSession,
+    state: FSMContext,
+) -> None:
+    try:
+        equipment_type_ids = parse_equipment_type_ids(message.text or "")
+    except ValueError as error:
+        await message.answer(str(error))
+        return
+
+    known_type_ids = {item.type_id for item in await get_equipment_types(session)}
+    unknown_type_ids = [type_id for type_id in equipment_type_ids if type_id not in known_type_ids]
+    if unknown_type_ids:
+        await message.answer(
+            "Не найдены типы оборудования: "
+            + ", ".join(f"#{type_id}" for type_id in unknown_type_ids)
+        )
+        return
+
+    data = await state.get_data()
+    booking_date = parse_schedule_date(data["booking_date"])
+    start_at = combine_date_time(booking_date, parse_time(data["start_time"]))
+    end_at = combine_date_time(booking_date, parse_time(data["end_time"]))
+
+    available_rooms = await get_available_rooms(
+        session,
+        start_at=start_at,
+        end_at=end_at,
+        capacity=data["capacity"],
+        equipment_type_ids=equipment_type_ids,
+    )
+
+    if not available_rooms:
+        await state.clear()
+        user = await get_current_user(message, session)
+        await message.answer(
+            "Подходящих свободных комнат не найдено. Попробуйте другой интервал или параметры.",
+            reply_markup=main_menu_keyboard(is_admin=bool(user and user.is_admin)),
+        )
+        return
+
+    await state.update_data(equipment_type_ids=equipment_type_ids)
+    await state.set_state(BookingCreationState.waiting_room_confirmation)
+    await message.answer(
+        format_available_rooms(available_rooms),
+        reply_markup=available_rooms_keyboard(available_rooms),
+    )
+
+
+@router.callback_query(
+    BookingCreationState.waiting_room_confirmation,
+    F.data.startswith(BOOKING_ROOM_PREFIX),
+)
+async def confirm_booking_room(
+    callback: CallbackQuery,
+    session: AsyncSession,
+    state: FSMContext,
+) -> None:
+    user = await get_current_user_from_callback(callback, session)
+    if not user:
+        await callback.answer("Пользователь не найден.", show_alert=True)
+        return
+
+    room_id_text = callback.data.removeprefix(BOOKING_ROOM_PREFIX) if callback.data else ""
+    if not room_id_text.isdigit():
+        await callback.answer("Некорректная комната.", show_alert=True)
+        return
+
+    data = await state.get_data()
+    booking_date = parse_schedule_date(data["booking_date"])
+    draft = BookingDraft(
+        start_at=combine_date_time(booking_date, parse_time(data["start_time"])),
+        end_at=combine_date_time(booking_date, parse_time(data["end_time"])),
+        purpose=data["purpose"],
+        capacity=data["capacity"],
+        equipment_type_ids=data["equipment_type_ids"],
+    )
+
+    try:
+        reservation = await create_booking(
+            session,
+            organizer=user,
+            room_id=int(room_id_text),
+            draft=draft,
+        )
+        await session.commit()
+    except ValueError as error:
+        await session.rollback()
+        await callback.answer(str(error), show_alert=True)
+        return
+
+    await state.clear()
+    await callback.answer("Бронирование создано.")
+    if callback.message:
+        await callback.message.answer(
+            "Бронирование создано.\n"
+            f"Номер: #{reservation.reservation_id}\n"
+            f"Дата: {booking_date.strftime('%d.%m.%Y')}\n"
+            f"Время: {draft.start_at.strftime('%H:%M')}-{draft.end_at.strftime('%H:%M')}",
+            reply_markup=main_menu_keyboard(is_admin=user.is_admin),
+        )
 
 
 @router.message(F.text == SCHEDULE_TEXT)
@@ -595,7 +853,7 @@ async def help_message(message: Message) -> None:
     )
 
 
-@router.message(F.text.in_({BOOK_ROOM_TEXT, MY_RESERVATIONS_TEXT}))
+@router.message(F.text == MY_RESERVATIONS_TEXT)
 async def feature_stub(message: Message) -> None:
     await message.answer(
         "Этот сценарий уже есть в меню. Следующим шагом реализуем расписание и бронирования."

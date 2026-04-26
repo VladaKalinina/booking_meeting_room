@@ -72,6 +72,12 @@ python scripts/check_equipment.py
 python scripts/check_schedule.py
 ```
 
+Проверить сервис создания бронирований:
+
+```powershell
+python scripts/check_booking.py
+```
+
 Назначить администратора:
 
 ```powershell
