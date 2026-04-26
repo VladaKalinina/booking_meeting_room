@@ -47,3 +47,9 @@ python scripts/check_db.py
 ```powershell
 python scripts/check_user_service.py
 ```
+
+Проверить полноценную регистрацию профиля:
+
+```powershell
+python scripts/check_registration.py
+```

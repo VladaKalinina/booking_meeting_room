@@ -2,6 +2,7 @@ from aiogram import Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
 from aiogram.client.session.aiohttp import AiohttpSession
 from aiogram.enums import ParseMode
+from aiogram.fsm.storage.memory import MemoryStorage
 
 from app.config import Config
 from app.handlers import router
@@ -19,7 +20,7 @@ def create_bot(config: Config) -> Bot:
 
 
 def create_dispatcher() -> Dispatcher:
-    dispatcher = Dispatcher()
+    dispatcher = Dispatcher(storage=MemoryStorage())
     dispatcher.update.middleware(DbSessionMiddleware())
     dispatcher.include_router(router)
     return dispatcher
