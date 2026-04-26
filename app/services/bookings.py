@@ -9,6 +9,7 @@ from app.repositories.reservations import (
     add_reservation,
     add_reservation_equipment_link,
     get_reservation_by_id,
+    list_all_reservations,
     list_active_reservations_by_organizer,
     list_reservations_for_period,
 )
@@ -194,6 +195,26 @@ async def cancel_own_reservation(
         raise ValueError("Бронирование не найдено.")
     if reservation.organizer_id != organizer.user_id:
         raise ValueError("Можно отменить только своё бронирование.")
+    if reservation.status_id not in ACTIVE_RESERVATION_STATUS_IDS:
+        raise ValueError("Это бронирование уже не активно.")
+
+    reservation.status_id = CANCELED_STATUS_ID
+    await session.flush()
+    return reservation
+
+
+async def get_all_reservations(session: AsyncSession) -> list[Reservation]:
+    return await list_all_reservations(session)
+
+
+async def cancel_any_reservation(
+    session: AsyncSession,
+    *,
+    reservation_id: int,
+) -> Reservation:
+    reservation = await get_reservation_by_id(session, reservation_id)
+    if not reservation:
+        raise ValueError("Бронирование не найдено.")
     if reservation.status_id not in ACTIVE_RESERVATION_STATUS_IDS:
         raise ValueError("Это бронирование уже не активно.")
 
