@@ -78,6 +78,12 @@ python scripts/check_schedule.py
 python scripts/check_booking.py
 ```
 
+Проверить список и отмену своих бронирований:
+
+```powershell
+python scripts/check_my_reservations.py
+```
+
 Назначить администратора:
 
 ```powershell

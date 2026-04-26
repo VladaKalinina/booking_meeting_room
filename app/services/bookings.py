@@ -8,6 +8,8 @@ from app.repositories.reservations import (
     ACTIVE_RESERVATION_STATUS_IDS,
     add_reservation,
     add_reservation_equipment_link,
+    get_reservation_by_id,
+    list_active_reservations_by_organizer,
     list_reservations_for_period,
 )
 from app.repositories.rooms import get_room_by_id, list_rooms
@@ -15,6 +17,7 @@ from app.services.rooms import validate_capacity
 from app.services.schedule import LOCAL_TIMEZONE
 
 CONFIRMED_STATUS_ID = 1
+CANCELED_STATUS_ID = 3
 
 
 @dataclass(frozen=True)
@@ -169,4 +172,31 @@ async def create_booking(
             equipment_id=equipment_id,
         )
 
+    return reservation
+
+
+async def get_my_active_reservations(
+    session: AsyncSession,
+    *,
+    organizer: User,
+) -> list[Reservation]:
+    return await list_active_reservations_by_organizer(session, organizer.user_id)
+
+
+async def cancel_own_reservation(
+    session: AsyncSession,
+    *,
+    organizer: User,
+    reservation_id: int,
+) -> Reservation:
+    reservation = await get_reservation_by_id(session, reservation_id)
+    if not reservation:
+        raise ValueError("Бронирование не найдено.")
+    if reservation.organizer_id != organizer.user_id:
+        raise ValueError("Можно отменить только своё бронирование.")
+    if reservation.status_id not in ACTIVE_RESERVATION_STATUS_IDS:
+        raise ValueError("Это бронирование уже не активно.")
+
+    reservation.status_id = CANCELED_STATUS_ID
+    await session.flush()
     return reservation

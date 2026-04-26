@@ -32,6 +32,42 @@ async def list_reservations_for_period(
     return list(result.scalars().all())
 
 
+async def list_active_reservations_by_organizer(
+    session: AsyncSession,
+    organizer_id: int,
+) -> list[Reservation]:
+    result = await session.execute(
+        select(Reservation)
+        .options(
+            selectinload(Reservation.room),
+            selectinload(Reservation.status),
+            selectinload(Reservation.equipment_items),
+        )
+        .where(
+            Reservation.organizer_id == organizer_id,
+            Reservation.status_id.in_(ACTIVE_RESERVATION_STATUS_IDS),
+        )
+        .order_by(Reservation.start_datetime, Reservation.reservation_id)
+    )
+    return list(result.scalars().all())
+
+
+async def get_reservation_by_id(
+    session: AsyncSession,
+    reservation_id: int,
+) -> Reservation | None:
+    result = await session.execute(
+        select(Reservation)
+        .options(
+            selectinload(Reservation.room),
+            selectinload(Reservation.status),
+            selectinload(Reservation.organizer),
+        )
+        .where(Reservation.reservation_id == reservation_id)
+    )
+    return result.scalar_one_or_none()
+
+
 async def add_reservation(
     session: AsyncSession,
     *,

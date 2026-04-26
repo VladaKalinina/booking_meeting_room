@@ -15,9 +15,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.repositories.users import get_user_by_telegram_id
 from app.services.bookings import (
     BookingDraft,
+    cancel_own_reservation,
     combine_date_time,
     create_booking,
     get_available_rooms,
+    get_my_active_reservations,
     parse_equipment_type_ids,
     parse_time,
     validate_booking_time,
@@ -69,6 +71,7 @@ EQUIPMENT_TYPE_ADD_CALLBACK = "equipment:type:add"
 EQUIPMENT_ADD_CALLBACK = "equipment:add"
 EQUIPMENT_ATTACH_CALLBACK = "equipment:attach"
 BOOKING_ROOM_PREFIX = "booking:room:"
+RESERVATION_CANCEL_PREFIX = "reservation:cancel:"
 
 
 def main_menu_keyboard(*, is_admin: bool = False) -> ReplyKeyboardMarkup:
@@ -254,6 +257,51 @@ def format_available_rooms(rooms) -> str:
         )
     lines.append("\nВыберите комнату для подтверждения бронирования.")
     return "\n".join(lines)
+
+
+def my_reservations_keyboard(reservations) -> InlineKeyboardMarkup | None:
+    if not reservations:
+        return None
+
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text=f"Отменить #{reservation.reservation_id}",
+                    callback_data=f"{RESERVATION_CANCEL_PREFIX}{reservation.reservation_id}",
+                )
+            ]
+            for reservation in reservations
+        ]
+    )
+
+
+def format_my_reservations(reservations) -> str:
+    if not reservations:
+        return "У вас пока нет активных бронирований."
+
+    lines = ["Ваши активные бронирования:"]
+    for reservation in reservations:
+        start_at = reservation.start_datetime.strftime("%d.%m.%Y %H:%M")
+        end_at = reservation.end_datetime.strftime("%H:%M")
+        equipment = ", ".join(item.part_number for item in reservation.equipment_items) or "не указано"
+        lines.append(
+            f"\n#{reservation.reservation_id}: {start_at}-{end_at}\n"
+            f"Комната: {reservation.room.name}\n"
+            f"Цель: {reservation.purpose}\n"
+            f"Оборудование: {equipment}\n"
+            f"Статус: {reservation.status.name}"
+        )
+
+    return "\n".join(lines)
+
+
+async def send_my_reservations(message: Message, session: AsyncSession, user) -> None:
+    reservations = await get_my_active_reservations(session, organizer=user)
+    await message.answer(
+        format_my_reservations(reservations),
+        reply_markup=my_reservations_keyboard(reservations),
+    )
 
 
 @router.message(CommandStart())
@@ -656,6 +704,52 @@ async def confirm_booking_room(
         )
 
 
+@router.message(F.text == MY_RESERVATIONS_TEXT)
+async def my_reservations(message: Message, session: AsyncSession) -> None:
+    user = await get_current_user(message, session)
+    if not user:
+        await message.answer("Сначала зарегистрируйтесь через /start.")
+        return
+
+    await send_my_reservations(message, session, user)
+
+
+@router.callback_query(F.data.startswith(RESERVATION_CANCEL_PREFIX))
+async def cancel_reservation_callback(
+    callback: CallbackQuery,
+    session: AsyncSession,
+) -> None:
+    user = await get_current_user_from_callback(callback, session)
+    if not user:
+        await callback.answer("Пользователь не найден.", show_alert=True)
+        return
+
+    reservation_id_text = callback.data.removeprefix(RESERVATION_CANCEL_PREFIX) if callback.data else ""
+    if not reservation_id_text.isdigit():
+        await callback.answer("Некорректный номер бронирования.", show_alert=True)
+        return
+
+    try:
+        reservation = await cancel_own_reservation(
+            session,
+            organizer=user,
+            reservation_id=int(reservation_id_text),
+        )
+        await session.commit()
+    except ValueError as error:
+        await session.rollback()
+        await callback.answer(str(error), show_alert=True)
+        return
+
+    await callback.answer(f"Бронирование #{reservation.reservation_id} отменено.")
+    if callback.message:
+        reservations = await get_my_active_reservations(session, organizer=user)
+        await callback.message.edit_text(
+            format_my_reservations(reservations),
+            reply_markup=my_reservations_keyboard(reservations),
+        )
+
+
 @router.message(F.text == SCHEDULE_TEXT)
 async def start_schedule_view(message: Message, state: FSMContext) -> None:
     await state.set_state(ScheduleState.waiting_date)
@@ -850,13 +944,6 @@ async def process_attach_equipment_id(
 async def help_message(message: Message) -> None:
     await message.answer(
         "Бот подключен к базе данных. Сейчас доступны регистрация, управление комнатами и оборудованием."
-    )
-
-
-@router.message(F.text == MY_RESERVATIONS_TEXT)
-async def feature_stub(message: Message) -> None:
-    await message.answer(
-        "Этот сценарий уже есть в меню. Следующим шагом реализуем расписание и бронирования."
     )
 
 
