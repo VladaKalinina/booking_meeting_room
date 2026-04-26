@@ -21,6 +21,11 @@ from app.services.equipment import (
     get_equipment_types,
 )
 from app.services.rooms import create_room, deactivate_room, get_rooms
+from app.services.schedule import (
+    format_schedule,
+    get_schedule_for_date,
+    parse_schedule_date,
+)
 from app.services.users import (
     is_profile_complete,
     is_valid_email,
@@ -33,6 +38,7 @@ from app.states.equipment import (
 )
 from app.states.registration import RegistrationState
 from app.states.rooms import RoomCreationState
+from app.states.schedule import ScheduleState
 
 router = Router()
 
@@ -392,6 +398,37 @@ async def equipment_management(message: Message, session: AsyncSession) -> None:
     await send_equipment_management(message, session)
 
 
+@router.message(F.text == SCHEDULE_TEXT)
+async def start_schedule_view(message: Message, state: FSMContext) -> None:
+    await state.set_state(ScheduleState.waiting_date)
+    await message.answer(
+        "Введите дату расписания в формате ДД.ММ.ГГГГ, например 26.04.2026.\n"
+        "Также можно написать: сегодня или завтра.",
+        reply_markup=cancel_keyboard(),
+    )
+
+
+@router.message(ScheduleState.waiting_date)
+async def process_schedule_date(
+    message: Message,
+    session: AsyncSession,
+    state: FSMContext,
+) -> None:
+    try:
+        schedule_date = parse_schedule_date(message.text or "")
+    except ValueError as error:
+        await message.answer(str(error))
+        return
+
+    schedule = await get_schedule_for_date(session, schedule_date=schedule_date)
+    await state.clear()
+    user = await get_current_user(message, session)
+    await message.answer(
+        format_schedule(schedule_date, schedule),
+        reply_markup=main_menu_keyboard(is_admin=bool(user and user.is_admin)),
+    )
+
+
 @router.callback_query(F.data == EQUIPMENT_TYPE_ADD_CALLBACK)
 async def start_equipment_type_creation(
     callback: CallbackQuery,
@@ -558,7 +595,7 @@ async def help_message(message: Message) -> None:
     )
 
 
-@router.message(F.text.in_({BOOK_ROOM_TEXT, MY_RESERVATIONS_TEXT, SCHEDULE_TEXT}))
+@router.message(F.text.in_({BOOK_ROOM_TEXT, MY_RESERVATIONS_TEXT}))
 async def feature_stub(message: Message) -> None:
     await message.answer(
         "Этот сценарий уже есть в меню. Следующим шагом реализуем расписание и бронирования."

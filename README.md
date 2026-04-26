@@ -66,6 +66,12 @@ python scripts/check_rooms.py
 python scripts/check_equipment.py
 ```
 
+Проверить сервис расписания:
+
+```powershell
+python scripts/check_schedule.py
+```
+
 Назначить администратора:
 
 ```powershell
