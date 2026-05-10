@@ -40,9 +40,11 @@ from app.services.schedule import (
     parse_schedule_date,
 )
 from app.services.users import (
+    get_users,
     is_profile_complete,
     is_valid_email,
     register_or_update_user_profile,
+    set_user_admin_status,
 )
 from app.states.equipment import (
     EquipmentAttachState,
@@ -75,6 +77,8 @@ EQUIPMENT_ATTACH_CALLBACK = "equipment:attach"
 BOOKING_ROOM_PREFIX = "booking:room:"
 RESERVATION_CANCEL_PREFIX = "reservation:cancel:"
 ADMIN_RESERVATION_CANCEL_PREFIX = "admin:reservation:cancel:"
+USER_ADMIN_SET_PREFIX = "users:admin:set:"
+USER_ADMIN_UNSET_PREFIX = "users:admin:unset:"
 
 
 def main_menu_keyboard(*, is_admin: bool = False) -> ReplyKeyboardMarkup:
@@ -352,6 +356,69 @@ async def send_all_reservations(message: Message, session: AsyncSession) -> None
     await message.answer(
         format_all_reservations(reservations),
         reply_markup=all_reservations_keyboard(reservations),
+    )
+
+
+def users_management_keyboard(users, *, current_user_id: int) -> InlineKeyboardMarkup | None:
+    buttons = []
+    for user in users:
+        if user.user_id == current_user_id:
+            continue
+
+        if user.is_admin:
+            buttons.append(
+                [
+                    InlineKeyboardButton(
+                        text=f"Снять права #{user.user_id}",
+                        callback_data=f"{USER_ADMIN_UNSET_PREFIX}{user.user_id}",
+                    )
+                ]
+            )
+        else:
+            buttons.append(
+                [
+                    InlineKeyboardButton(
+                        text=f"Назначить админом #{user.user_id}",
+                        callback_data=f"{USER_ADMIN_SET_PREFIX}{user.user_id}",
+                    )
+                ]
+            )
+
+    if not buttons:
+        return None
+
+    return InlineKeyboardMarkup(inline_keyboard=buttons)
+
+
+def format_users_text(users) -> str:
+    if not users:
+        return "Пользователи пока не зарегистрированы."
+
+    lines = ["Пользователи:"]
+    for user in users:
+        role = "Администратор" if user.is_admin else "Сотрудник"
+        lines.append(
+            f"\n#{user.user_id}: {user.full_name}\n"
+            f"Email: {user.email}\n"
+            f"Telegram ID: {user.telegram_id}\n"
+            f"Роль: {role}"
+        )
+
+    return "\n".join(lines)
+
+
+async def send_users_management(
+    message: Message,
+    session: AsyncSession,
+    current_user,
+) -> None:
+    users = await get_users(session)
+    await message.answer(
+        format_users_text(users),
+        reply_markup=users_management_keyboard(
+            users,
+            current_user_id=current_user.user_id,
+        ),
     )
 
 
@@ -846,6 +913,66 @@ async def admin_cancel_reservation_callback(
         )
 
 
+@router.message(F.text == USERS_MANAGEMENT_TEXT)
+async def users_management(message: Message, session: AsyncSession) -> None:
+    current_user = await ensure_admin_message(message, session)
+    if not current_user:
+        return
+
+    await send_users_management(message, session, current_user)
+
+
+@router.callback_query(
+    F.data.startswith(USER_ADMIN_SET_PREFIX) | F.data.startswith(USER_ADMIN_UNSET_PREFIX)
+)
+async def toggle_user_admin_status(
+    callback: CallbackQuery,
+    session: AsyncSession,
+) -> None:
+    current_user = await ensure_admin_callback(callback, session)
+    if not current_user:
+        return
+
+    callback_data = callback.data or ""
+    make_admin = callback_data.startswith(USER_ADMIN_SET_PREFIX)
+    prefix = USER_ADMIN_SET_PREFIX if make_admin else USER_ADMIN_UNSET_PREFIX
+    user_id_text = callback_data.removeprefix(prefix)
+
+    if not user_id_text.isdigit():
+        await callback.answer("Некорректный идентификатор пользователя.", show_alert=True)
+        return
+
+    target_user_id = int(user_id_text)
+    if target_user_id == current_user.user_id:
+        await callback.answer("Нельзя изменить собственную роль через этот раздел.", show_alert=True)
+        return
+
+    try:
+        target_user = await set_user_admin_status(
+            session,
+            user_id=target_user_id,
+            is_admin=make_admin,
+        )
+        await session.commit()
+    except ValueError as error:
+        await session.rollback()
+        await callback.answer(str(error), show_alert=True)
+        return
+
+    role_text = "администратор" if target_user.is_admin else "сотрудник"
+    await callback.answer(f"Пользователь #{target_user.user_id}: {role_text}.")
+
+    if callback.message:
+        users = await get_users(session)
+        await callback.message.edit_text(
+            format_users_text(users),
+            reply_markup=users_management_keyboard(
+                users,
+                current_user_id=current_user.user_id,
+            ),
+        )
+
+
 @router.message(F.text == SCHEDULE_TEXT)
 async def start_schedule_view(message: Message, state: FSMContext) -> None:
     await state.set_state(ScheduleState.waiting_date)
@@ -1043,7 +1170,7 @@ async def help_message(message: Message) -> None:
     )
 
 
-@router.message(F.text.in_({ANALYTICS_TEXT, USERS_MANAGEMENT_TEXT}))
+@router.message(F.text == ANALYTICS_TEXT)
 async def admin_feature_stub(message: Message) -> None:
     await message.answer("Административный сценарий добавим на следующих этапах.")
 

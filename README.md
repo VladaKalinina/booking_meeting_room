@@ -90,6 +90,12 @@ python scripts/check_my_reservations.py
 python scripts/check_admin_reservations.py
 ```
 
+Проверить управление пользователями:
+
+```powershell
+python scripts/check_user_management.py
+```
+
 Назначить администратора:
 
 ```powershell

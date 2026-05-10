@@ -1,6 +1,6 @@
 import asyncio
 import sys
-from datetime import datetime
+from datetime import datetime, time, timedelta
 from pathlib import Path
 
 sys.path.append(str(Path(__file__).resolve().parents[1]))
@@ -39,9 +39,10 @@ async def main() -> None:
                 location="5 этаж",
                 capacity=4,
             )
+            booking_date = datetime.now(LOCAL_TIMEZONE).date() + timedelta(days=2)
             draft = BookingDraft(
-                start_at=datetime(2026, 4, 28, 12, 0, tzinfo=LOCAL_TIMEZONE),
-                end_at=datetime(2026, 4, 28, 13, 0, tzinfo=LOCAL_TIMEZONE),
+                start_at=datetime.combine(booking_date, time(12, 0), tzinfo=LOCAL_TIMEZONE),
+                end_at=datetime.combine(booking_date, time(13, 0), tzinfo=LOCAL_TIMEZONE),
                 purpose="Проверка списка",
                 capacity=2,
                 equipment_type_ids=[],
