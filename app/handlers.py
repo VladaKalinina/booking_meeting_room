@@ -13,6 +13,7 @@ from aiogram.types import (
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.repositories.users import get_user_by_telegram_id
+from app.services.analytics import format_admin_analytics, get_admin_analytics
 from app.services.bookings import (
     BookingDraft,
     cancel_any_reservation,
@@ -1171,8 +1172,12 @@ async def help_message(message: Message) -> None:
 
 
 @router.message(F.text == ANALYTICS_TEXT)
-async def admin_feature_stub(message: Message) -> None:
-    await message.answer("Административный сценарий добавим на следующих этапах.")
+async def show_admin_analytics(message: Message, session: AsyncSession) -> None:
+    if not await ensure_admin_message(message, session):
+        return
+
+    analytics = await get_admin_analytics(session)
+    await message.answer(format_admin_analytics(analytics))
 
 
 @router.message()

@@ -101,3 +101,9 @@ python scripts/check_user_management.py
 ```powershell
 python scripts/set_admin.py <telegram_id_or_email> true
 ```
+
+Проверить админскую аналитику:
+
+```powershell
+python scripts/check_analytics.py
+```
