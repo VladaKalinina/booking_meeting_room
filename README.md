@@ -55,6 +55,49 @@ python main.py
 python scripts/check_bot.py
 ```
 
+## Запуск в Docker
+
+1. Установите Docker Desktop или Docker Engine.
+
+2. Создайте `.env` по примеру `.env.example` и заполните:
+
+```env
+TELEGRAM_BOT_TOKEN=your_token
+TELEGRAM_PROXY_URL=
+POSTGRES_DB=booking_meeting_room
+POSTGRES_USER=postgres
+POSTGRES_PASSWORD=strong_password
+POSTGRES_PORT=5432
+```
+
+Для Docker строку `DATABASE_URL` можно оставить любой: `docker-compose.yml` сам передаёт боту адрес БД внутри сети контейнеров.
+
+3. Соберите и запустите контейнеры:
+
+```powershell
+docker compose up -d --build
+```
+
+Контейнер `bot` дождётся PostgreSQL, применит миграции Alembic и запустит polling.
+
+4. Посмотреть логи:
+
+```powershell
+docker compose logs -f bot
+```
+
+5. Остановить проект:
+
+```powershell
+docker compose down
+```
+
+Остановить и удалить данные PostgreSQL:
+
+```powershell
+docker compose down -v
+```
+
 ## База данных
 
 Применить миграции:
