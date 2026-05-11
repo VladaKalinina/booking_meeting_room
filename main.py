@@ -6,6 +6,7 @@ import sys
 
 from app.bot import create_bot, create_dispatcher
 from app.config import load_config
+from app.services.reminders import run_reminder_loop, stop_reminder_loop
 
 SINGLE_INSTANCE_HOST = "127.0.0.1"
 SINGLE_INSTANCE_PORT = 8765
@@ -36,9 +37,13 @@ async def main() -> None:
     config = load_config()
     bot = create_bot(config)
     dispatcher = create_dispatcher()
+    reminder_task = asyncio.create_task(run_reminder_loop(bot))
 
     logging.info("Booking meeting room bot is starting")
-    await dispatcher.start_polling(bot)
+    try:
+        await dispatcher.start_polling(bot)
+    finally:
+        await stop_reminder_loop(reminder_task)
 
 
 if __name__ == "__main__":

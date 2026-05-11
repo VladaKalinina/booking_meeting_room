@@ -4,7 +4,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from app.db.models import Reservation, ReservationEquipment
+from app.db.models import Participant, Reservation, ReservationEquipment
 
 ACTIVE_RESERVATION_STATUS_IDS = (1, 2)
 
@@ -41,7 +41,12 @@ async def list_active_reservations_by_organizer(
         .options(
             selectinload(Reservation.room),
             selectinload(Reservation.status),
+            selectinload(Reservation.organizer),
             selectinload(Reservation.equipment_items),
+            selectinload(Reservation.participants).selectinload(Participant.user),
+            selectinload(Reservation.participants).selectinload(
+                Participant.invitation_status
+            ),
         )
         .where(
             Reservation.organizer_id == organizer_id,
@@ -60,6 +65,10 @@ async def list_all_reservations(session: AsyncSession) -> list[Reservation]:
             selectinload(Reservation.status),
             selectinload(Reservation.organizer),
             selectinload(Reservation.equipment_items),
+            selectinload(Reservation.participants).selectinload(Participant.user),
+            selectinload(Reservation.participants).selectinload(
+                Participant.invitation_status
+            ),
         )
         .order_by(Reservation.start_datetime.desc(), Reservation.reservation_id.desc())
     )
@@ -76,6 +85,11 @@ async def get_reservation_by_id(
             selectinload(Reservation.room),
             selectinload(Reservation.status),
             selectinload(Reservation.organizer),
+            selectinload(Reservation.equipment_items),
+            selectinload(Reservation.participants).selectinload(Participant.user),
+            selectinload(Reservation.participants).selectinload(
+                Participant.invitation_status
+            ),
         )
         .where(Reservation.reservation_id == reservation_id)
     )

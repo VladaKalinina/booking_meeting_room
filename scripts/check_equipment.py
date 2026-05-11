@@ -9,8 +9,10 @@ from app.services.equipment import (
     attach_equipment_to_room,
     create_equipment,
     create_equipment_type,
+    detach_equipment_from_room,
     get_equipment_items,
     get_equipment_types,
+    remove_equipment,
 )
 from app.services.rooms import create_room
 
@@ -40,6 +42,14 @@ async def main() -> None:
             assert link.equipment_id == equipment.equipment_id
             assert any(item.type_id == equipment_type.type_id for item in await get_equipment_types(session))
             assert any(item.equipment_id == equipment.equipment_id for item in await get_equipment_items(session))
+
+            await detach_equipment_from_room(
+                session,
+                room_id=room.room_id,
+                equipment_id=equipment.equipment_id,
+            )
+            removed = await remove_equipment(session, equipment_id=equipment.equipment_id)
+            assert removed.equipment_id == equipment.equipment_id
 
             await session.rollback()
 

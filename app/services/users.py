@@ -3,7 +3,12 @@ import re
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models import User
-from app.repositories.users import add_user, get_user_by_email, get_user_by_telegram_id
+from app.repositories.users import (
+    add_user,
+    get_user_by_email,
+    get_user_by_telegram_id,
+    list_users,
+)
 
 EMAIL_PATTERN = re.compile(r"^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$")
 
@@ -86,3 +91,23 @@ async def register_or_update_user_profile(
         await session.flush()
 
     return user, created
+
+
+async def get_users(session: AsyncSession) -> list[User]:
+    return await list_users(session)
+
+
+async def set_user_admin_status(
+    session: AsyncSession,
+    *,
+    user_id: int,
+    is_admin: bool,
+) -> User:
+    users = await list_users(session)
+    user = next((item for item in users if item.user_id == user_id), None)
+    if not user:
+        raise ValueError("Пользователь не найден.")
+
+    user.is_admin = is_admin
+    await session.flush()
+    return user
