@@ -25,6 +25,7 @@ from app.services.bookings import (
     get_my_active_reservations,
     parse_equipment_type_ids,
     parse_time,
+    update_booking,
     validate_booking_time,
 )
 from app.services.equipment import (
@@ -35,6 +36,15 @@ from app.services.equipment import (
     get_equipment_types,
 )
 from app.services.rooms import create_room, deactivate_room, get_rooms
+from app.services.participants import (
+    ACCEPTED_INVITATION_STATUS_ID,
+    DECLINED_INVITATION_STATUS_ID,
+    add_participants_by_email,
+    format_participants,
+    list_reservation_participants,
+    parse_participant_emails,
+    set_invitation_status,
+)
 from app.services.schedule import (
     format_schedule,
     get_schedule_for_date,
@@ -52,7 +62,7 @@ from app.states.equipment import (
     EquipmentCreationState,
     EquipmentTypeCreationState,
 )
-from app.states.booking import BookingCreationState
+from app.states.booking import BookingCreationState, BookingEditState, ParticipantManagementState
 from app.states.registration import RegistrationState
 from app.states.rooms import RoomCreationState
 from app.states.schedule import ScheduleState
@@ -77,7 +87,12 @@ EQUIPMENT_ADD_CALLBACK = "equipment:add"
 EQUIPMENT_ATTACH_CALLBACK = "equipment:attach"
 BOOKING_ROOM_PREFIX = "booking:room:"
 RESERVATION_CANCEL_PREFIX = "reservation:cancel:"
+RESERVATION_EDIT_PREFIX = "reservation:edit:"
+RESERVATION_EDIT_ROOM_PREFIX = "reservation:edit-room:"
+RESERVATION_PARTICIPANTS_PREFIX = "reservation:participants:"
 ADMIN_RESERVATION_CANCEL_PREFIX = "admin:reservation:cancel:"
+INVITATION_ACCEPT_PREFIX = "invitation:accept:"
+INVITATION_DECLINE_PREFIX = "invitation:decline:"
 USER_ADMIN_SET_PREFIX = "users:admin:set:"
 USER_ADMIN_UNSET_PREFIX = "users:admin:unset:"
 
@@ -244,6 +259,19 @@ def available_rooms_keyboard(rooms) -> InlineKeyboardMarkup:
         ]
     )
 
+def edit_available_rooms_keyboard(rooms) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text=f"#{room.room_id} {room.name}",
+                    callback_data=f"{RESERVATION_EDIT_ROOM_PREFIX}{room.room_id}",
+                )
+            ]
+            for room in rooms
+        ]
+    )
+
 
 def format_equipment_type_prompt(types) -> str:
     if not types:
@@ -271,15 +299,45 @@ def my_reservations_keyboard(reservations) -> InlineKeyboardMarkup | None:
     if not reservations:
         return None
 
-    return InlineKeyboardMarkup(
-        inline_keyboard=[
+    keyboard = []
+    for reservation in reservations:
+        keyboard.append(
+            [
+                InlineKeyboardButton(
+                    text=f"Изменить #{reservation.reservation_id}",
+                    callback_data=f"{RESERVATION_EDIT_PREFIX}{reservation.reservation_id}",
+                ),
+                InlineKeyboardButton(
+                    text=f"Участники #{reservation.reservation_id}",
+                    callback_data=f"{RESERVATION_PARTICIPANTS_PREFIX}{reservation.reservation_id}",
+                ),
+            ]
+        )
+        keyboard.append(
             [
                 InlineKeyboardButton(
                     text=f"Отменить #{reservation.reservation_id}",
                     callback_data=f"{RESERVATION_CANCEL_PREFIX}{reservation.reservation_id}",
                 )
             ]
-            for reservation in reservations
+        )
+
+    return InlineKeyboardMarkup(inline_keyboard=keyboard)
+
+
+def invitation_response_keyboard(participant_id: int) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="Принять",
+                    callback_data=f"{INVITATION_ACCEPT_PREFIX}{participant_id}",
+                ),
+                InlineKeyboardButton(
+                    text="Отклонить",
+                    callback_data=f"{INVITATION_DECLINE_PREFIX}{participant_id}",
+                ),
+            ]
         ]
     )
 
@@ -310,6 +368,47 @@ async def send_my_reservations(message: Message, session: AsyncSession, user) ->
         format_my_reservations(reservations),
         reply_markup=my_reservations_keyboard(reservations),
     )
+
+
+def format_invitation_message(reservation) -> str:
+    start_at = reservation.start_datetime.strftime("%d.%m.%Y %H:%M")
+    end_at = reservation.end_datetime.strftime("%H:%M")
+    return (
+        "Вас пригласили на встречу.\n"
+        f"Организатор: {reservation.organizer.full_name}\n"
+        f"Комната: {reservation.room.name}\n"
+        f"Время: {start_at}-{end_at}\n"
+        f"Цель: {reservation.purpose}"
+    )
+
+
+def format_reservation_changed_message(reservation) -> str:
+    start_at = reservation.start_datetime.strftime("%d.%m.%Y %H:%M")
+    end_at = reservation.end_datetime.strftime("%H:%M")
+    return (
+        "Бронирование встречи изменено.\n"
+        f"Организатор: {reservation.organizer.full_name}\n"
+        f"Комната: {reservation.room.name}\n"
+        f"Время: {start_at}-{end_at}\n"
+        f"Цель: {reservation.purpose}"
+    )
+
+
+def format_reservation_canceled_message(reservation) -> str:
+    start_at = reservation.start_datetime.strftime("%d.%m.%Y %H:%M")
+    end_at = reservation.end_datetime.strftime("%H:%M")
+    return (
+        "Встреча отменена.\n"
+        f"Организатор: {reservation.organizer.full_name}\n"
+        f"Комната: {reservation.room.name}\n"
+        f"Время: {start_at}-{end_at}\n"
+        f"Цель: {reservation.purpose}"
+    )
+
+
+async def notify_reservation_participants(bot, reservation, text: str) -> None:
+    for participant in reservation.participants:
+        await bot.send_message(participant.user.telegram_id, text)
 
 
 def all_reservations_keyboard(reservations) -> InlineKeyboardMarkup | None:
@@ -833,6 +932,381 @@ async def my_reservations(message: Message, session: AsyncSession) -> None:
     await send_my_reservations(message, session, user)
 
 
+@router.callback_query(F.data.startswith(RESERVATION_EDIT_PREFIX))
+async def start_reservation_edit(
+    callback: CallbackQuery,
+    session: AsyncSession,
+    state: FSMContext,
+) -> None:
+    user = await get_current_user_from_callback(callback, session)
+    if not user:
+        await callback.answer("Пользователь не найден.", show_alert=True)
+        return
+
+    reservation_id_text = callback.data.removeprefix(RESERVATION_EDIT_PREFIX) if callback.data else ""
+    if not reservation_id_text.isdigit():
+        await callback.answer("Некорректный номер бронирования.", show_alert=True)
+        return
+
+    reservations = await get_my_active_reservations(session, organizer=user)
+    reservation = next(
+        (
+            item
+            for item in reservations
+            if item.reservation_id == int(reservation_id_text)
+        ),
+        None,
+    )
+    if not reservation:
+        await callback.answer("Активное бронирование не найдено.", show_alert=True)
+        return
+
+    await state.set_state(BookingEditState.waiting_date)
+    await state.update_data(reservation_id=reservation.reservation_id)
+    await callback.answer()
+    if callback.message:
+        await callback.message.answer(
+            "Введите новую дату встречи в формате ДД.ММ.ГГГГ.",
+            reply_markup=cancel_keyboard(),
+        )
+
+
+@router.message(BookingEditState.waiting_date)
+async def process_booking_edit_date(message: Message, state: FSMContext) -> None:
+    try:
+        booking_date = parse_schedule_date(message.text or "")
+    except ValueError as error:
+        await message.answer(str(error))
+        return
+
+    await state.update_data(booking_date=booking_date.isoformat())
+    await state.set_state(BookingEditState.waiting_start_time)
+    await message.answer("Введите новое время начала в формате ЧЧ:ММ.")
+
+
+@router.message(BookingEditState.waiting_start_time)
+async def process_booking_edit_start_time(message: Message, state: FSMContext) -> None:
+    try:
+        start_time = parse_time(message.text or "")
+    except ValueError as error:
+        await message.answer(str(error))
+        return
+
+    await state.update_data(start_time=start_time.strftime("%H:%M"))
+    await state.set_state(BookingEditState.waiting_end_time)
+    await message.answer("Введите новое время окончания в формате ЧЧ:ММ.")
+
+
+@router.message(BookingEditState.waiting_end_time)
+async def process_booking_edit_end_time(message: Message, state: FSMContext) -> None:
+    try:
+        end_time = parse_time(message.text or "")
+    except ValueError as error:
+        await message.answer(str(error))
+        return
+
+    data = await state.get_data()
+    start_at = combine_date_time(
+        parse_schedule_date(data["booking_date"]),
+        parse_time(data["start_time"]),
+    )
+    end_at = combine_date_time(parse_schedule_date(data["booking_date"]), end_time)
+
+    try:
+        validate_booking_time(start_at, end_at)
+    except ValueError as error:
+        await message.answer(str(error))
+        return
+
+    await state.update_data(end_time=end_time.strftime("%H:%M"))
+    await state.set_state(BookingEditState.waiting_purpose)
+    await message.answer("Введите новую цель встречи.")
+
+
+@router.message(BookingEditState.waiting_purpose)
+async def process_booking_edit_purpose(message: Message, state: FSMContext) -> None:
+    purpose = " ".join((message.text or "").split())
+    if not purpose:
+        await message.answer("Цель встречи не может быть пустой.")
+        return
+    if len(purpose) > 200:
+        await message.answer("Цель встречи должна быть не длиннее 200 символов.")
+        return
+
+    await state.update_data(purpose=purpose)
+    await state.set_state(BookingEditState.waiting_capacity)
+    await message.answer("Введите новую минимальную вместимость комнаты числом.")
+
+
+@router.message(BookingEditState.waiting_capacity)
+async def process_booking_edit_capacity(
+    message: Message,
+    session: AsyncSession,
+    state: FSMContext,
+) -> None:
+    capacity_text = (message.text or "").strip()
+    if not capacity_text.isdigit() or int(capacity_text) <= 0:
+        await message.answer("Вместимость нужно указать положительным целым числом.")
+        return
+
+    await state.update_data(capacity=int(capacity_text))
+    await state.set_state(BookingEditState.waiting_equipment)
+    await message.answer(format_equipment_type_prompt(await get_equipment_types(session)))
+
+
+@router.message(BookingEditState.waiting_equipment)
+async def process_booking_edit_equipment(
+    message: Message,
+    session: AsyncSession,
+    state: FSMContext,
+) -> None:
+    try:
+        equipment_type_ids = parse_equipment_type_ids(message.text or "")
+    except ValueError as error:
+        await message.answer(str(error))
+        return
+
+    known_type_ids = {item.type_id for item in await get_equipment_types(session)}
+    unknown_type_ids = [type_id for type_id in equipment_type_ids if type_id not in known_type_ids]
+    if unknown_type_ids:
+        await message.answer(
+            "Не найдены типы оборудования: "
+            + ", ".join(f"#{type_id}" for type_id in unknown_type_ids)
+        )
+        return
+
+    data = await state.get_data()
+    booking_date = parse_schedule_date(data["booking_date"])
+    start_at = combine_date_time(booking_date, parse_time(data["start_time"]))
+    end_at = combine_date_time(booking_date, parse_time(data["end_time"]))
+
+    available_rooms = await get_available_rooms(
+        session,
+        start_at=start_at,
+        end_at=end_at,
+        capacity=data["capacity"],
+        equipment_type_ids=equipment_type_ids,
+        exclude_reservation_id=data["reservation_id"],
+    )
+
+    if not available_rooms:
+        await state.clear()
+        user = await get_current_user(message, session)
+        await message.answer(
+            "Подходящих свободных комнат не найдено. Изменение отменено.",
+            reply_markup=main_menu_keyboard(is_admin=bool(user and user.is_admin)),
+        )
+        return
+
+    await state.update_data(equipment_type_ids=equipment_type_ids)
+    await state.set_state(BookingEditState.waiting_room_confirmation)
+    await message.answer(
+        format_available_rooms(available_rooms),
+        reply_markup=edit_available_rooms_keyboard(available_rooms),
+    )
+
+
+@router.callback_query(
+    BookingEditState.waiting_room_confirmation,
+    F.data.startswith(RESERVATION_EDIT_ROOM_PREFIX),
+)
+async def confirm_booking_edit_room(
+    callback: CallbackQuery,
+    session: AsyncSession,
+    state: FSMContext,
+) -> None:
+    user = await get_current_user_from_callback(callback, session)
+    if not user:
+        await callback.answer("Пользователь не найден.", show_alert=True)
+        return
+
+    room_id_text = callback.data.removeprefix(RESERVATION_EDIT_ROOM_PREFIX) if callback.data else ""
+    if not room_id_text.isdigit():
+        await callback.answer("Некорректная комната.", show_alert=True)
+        return
+
+    data = await state.get_data()
+    booking_date = parse_schedule_date(data["booking_date"])
+    draft = BookingDraft(
+        start_at=combine_date_time(booking_date, parse_time(data["start_time"])),
+        end_at=combine_date_time(booking_date, parse_time(data["end_time"])),
+        purpose=data["purpose"],
+        capacity=data["capacity"],
+        equipment_type_ids=data["equipment_type_ids"],
+    )
+
+    try:
+        await update_booking(
+            session,
+            organizer=user,
+            reservation_id=data["reservation_id"],
+            room_id=int(room_id_text),
+            draft=draft,
+        )
+        await session.commit()
+    except ValueError as error:
+        await session.rollback()
+        await callback.answer(str(error), show_alert=True)
+        return
+
+    reservations = await get_my_active_reservations(session, organizer=user)
+    reservation = next(
+        item for item in reservations if item.reservation_id == data["reservation_id"]
+    )
+    await notify_reservation_participants(
+        callback.bot,
+        reservation,
+        format_reservation_changed_message(reservation),
+    )
+
+    await state.clear()
+    await callback.answer("Бронирование изменено.")
+    if callback.message:
+        await callback.message.answer(
+            "Бронирование изменено. Участникам отправлены уведомления.",
+            reply_markup=main_menu_keyboard(is_admin=user.is_admin),
+        )
+
+
+@router.callback_query(F.data.startswith(RESERVATION_PARTICIPANTS_PREFIX))
+async def start_participants_management(
+    callback: CallbackQuery,
+    session: AsyncSession,
+    state: FSMContext,
+) -> None:
+    user = await get_current_user_from_callback(callback, session)
+    if not user:
+        await callback.answer("Пользователь не найден.", show_alert=True)
+        return
+
+    reservation_id_text = (
+        callback.data.removeprefix(RESERVATION_PARTICIPANTS_PREFIX)
+        if callback.data
+        else ""
+    )
+    if not reservation_id_text.isdigit():
+        await callback.answer("Некорректный номер бронирования.", show_alert=True)
+        return
+
+    reservation_id = int(reservation_id_text)
+    reservations = await get_my_active_reservations(session, organizer=user)
+    if not any(item.reservation_id == reservation_id for item in reservations):
+        await callback.answer("Активное бронирование не найдено.", show_alert=True)
+        return
+
+    participants = await list_reservation_participants(
+        session,
+        reservation_id=reservation_id,
+    )
+    await state.set_state(ParticipantManagementState.waiting_emails)
+    await state.update_data(reservation_id=reservation_id)
+    await callback.answer()
+    if callback.message:
+        await callback.message.answer(
+            format_participants(participants)
+            + "\n\nВведите email участников через запятую.",
+            reply_markup=cancel_keyboard(),
+        )
+
+
+@router.message(ParticipantManagementState.waiting_emails)
+async def process_participant_emails(
+    message: Message,
+    session: AsyncSession,
+    state: FSMContext,
+) -> None:
+    user = await get_current_user(message, session)
+    if not user:
+        await message.answer("Сначала зарегистрируйтесь через /start.")
+        return
+
+    emails = parse_participant_emails(message.text or "")
+    if not emails:
+        await message.answer("Введите хотя бы один email.")
+        return
+
+    data = await state.get_data()
+    try:
+        result = await add_participants_by_email(
+            session,
+            organizer=user,
+            reservation_id=data["reservation_id"],
+            emails=emails,
+        )
+        await session.commit()
+    except ValueError as error:
+        await session.rollback()
+        await message.answer(str(error))
+        return
+
+    reservations = await get_my_active_reservations(session, organizer=user)
+    reservation = next(
+        item for item in reservations if item.reservation_id == data["reservation_id"]
+    )
+
+    for participant in result.added:
+        await message.bot.send_message(
+            participant.user.telegram_id,
+            format_invitation_message(reservation),
+            reply_markup=invitation_response_keyboard(participant.participant_id),
+        )
+
+    lines = [f"Добавлено участников: {len(result.added)}."]
+    if result.already_invited:
+        lines.append(
+            "Уже были приглашены: "
+            + ", ".join(user.email for user in result.already_invited)
+        )
+    if result.not_found_emails:
+        lines.append("Не найдены пользователи: " + ", ".join(result.not_found_emails))
+
+    await state.clear()
+    await message.answer(
+        "\n".join(lines),
+        reply_markup=main_menu_keyboard(is_admin=user.is_admin),
+    )
+
+
+@router.callback_query(
+    F.data.startswith(INVITATION_ACCEPT_PREFIX) | F.data.startswith(INVITATION_DECLINE_PREFIX)
+)
+async def respond_to_invitation(
+    callback: CallbackQuery,
+    session: AsyncSession,
+) -> None:
+    callback_data = callback.data or ""
+    accepted = callback_data.startswith(INVITATION_ACCEPT_PREFIX)
+    prefix = INVITATION_ACCEPT_PREFIX if accepted else INVITATION_DECLINE_PREFIX
+    participant_id_text = callback_data.removeprefix(prefix)
+    if not participant_id_text.isdigit():
+        await callback.answer("Некорректное приглашение.", show_alert=True)
+        return
+
+    try:
+        participant = await set_invitation_status(
+            session,
+            participant_id=int(participant_id_text),
+            telegram_id=callback.from_user.id,
+            status_id=ACCEPTED_INVITATION_STATUS_ID
+            if accepted
+            else DECLINED_INVITATION_STATUS_ID,
+        )
+        await session.commit()
+    except ValueError as error:
+        await session.rollback()
+        await callback.answer(str(error), show_alert=True)
+        return
+
+    status_text = "принял" if accepted else "отклонил"
+    await callback.bot.send_message(
+        participant.reservation.organizer.telegram_id,
+        f"{participant.user.full_name} {status_text} приглашение на встречу #{participant.reservation_id}.",
+    )
+    await callback.answer("Ответ сохранён.")
+    if callback.message:
+        await callback.message.edit_reply_markup(reply_markup=None)
+
+
 @router.callback_query(F.data.startswith(RESERVATION_CANCEL_PREFIX))
 async def cancel_reservation_callback(
     callback: CallbackQuery,
@@ -860,6 +1334,11 @@ async def cancel_reservation_callback(
         await callback.answer(str(error), show_alert=True)
         return
 
+    await notify_reservation_participants(
+        callback.bot,
+        reservation,
+        format_reservation_canceled_message(reservation),
+    )
     await callback.answer(f"Бронирование #{reservation.reservation_id} отменено.")
     if callback.message:
         reservations = await get_my_active_reservations(session, organizer=user)
@@ -905,6 +1384,15 @@ async def admin_cancel_reservation_callback(
         await callback.answer(str(error), show_alert=True)
         return
 
+    await callback.bot.send_message(
+        reservation.organizer.telegram_id,
+        format_reservation_canceled_message(reservation),
+    )
+    await notify_reservation_participants(
+        callback.bot,
+        reservation,
+        format_reservation_canceled_message(reservation),
+    )
     await callback.answer(f"Бронирование #{reservation.reservation_id} отменено.")
     if callback.message:
         reservations = await get_all_reservations(session)

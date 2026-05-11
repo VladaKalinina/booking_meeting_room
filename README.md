@@ -78,10 +78,22 @@ python scripts/check_schedule.py
 python scripts/check_booking.py
 ```
 
+Проверить изменение бронирований:
+
+```powershell
+python scripts/check_booking_edit.py
+```
+
 Проверить список и отмену своих бронирований:
 
 ```powershell
 python scripts/check_my_reservations.py
+```
+
+Проверить участников встречи и статусы приглашений:
+
+```powershell
+python scripts/check_participants.py
 ```
 
 Проверить админский список и отмену бронирований:

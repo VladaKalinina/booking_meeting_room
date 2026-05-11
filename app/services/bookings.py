@@ -1,9 +1,10 @@
 from dataclasses import dataclass
 from datetime import date, datetime, time
 
+from sqlalchemy import delete
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.db.models import Reservation, Room, User
+from app.db.models import Reservation, ReservationEquipment, Room, User
 from app.repositories.reservations import (
     ACTIVE_RESERVATION_STATUS_IDS,
     add_reservation,
@@ -92,6 +93,7 @@ async def get_available_rooms(
     end_at: datetime,
     capacity: int,
     equipment_type_ids: list[int],
+    exclude_reservation_id: int | None = None,
 ) -> list[Room]:
     validate_booking_time(start_at, end_at)
     validate_capacity(capacity)
@@ -113,6 +115,7 @@ async def get_available_rooms(
         reservation.room_id
         for reservation in reservations
         if reservation.status_id in ACTIVE_RESERVATION_STATUS_IDS
+        and reservation.reservation_id != exclude_reservation_id
         and reservation_overlaps(
             reservation_start=reservation.start_datetime,
             reservation_end=reservation.end_datetime,
@@ -173,6 +176,59 @@ async def create_booking(
             equipment_id=equipment_id,
         )
 
+    return reservation
+
+
+async def update_booking(
+    session: AsyncSession,
+    *,
+    organizer: User,
+    reservation_id: int,
+    room_id: int,
+    draft: BookingDraft,
+) -> Reservation:
+    reservation = await get_reservation_by_id(session, reservation_id)
+    if not reservation:
+        raise ValueError("Бронирование не найдено.")
+    if reservation.organizer_id != organizer.user_id:
+        raise ValueError("Можно изменить только своё бронирование.")
+    if reservation.status_id not in ACTIVE_RESERVATION_STATUS_IDS:
+        raise ValueError("Это бронирование уже не активно.")
+
+    available_rooms = await get_available_rooms(
+        session,
+        start_at=draft.start_at,
+        end_at=draft.end_at,
+        capacity=draft.capacity,
+        equipment_type_ids=draft.equipment_type_ids,
+        exclude_reservation_id=reservation.reservation_id,
+    )
+    available_room_ids = {room.room_id for room in available_rooms}
+    if room_id not in available_room_ids:
+        raise ValueError("Выбранная комната недоступна для нового интервала.")
+
+    room = await get_room_by_id(session, room_id)
+    if not room:
+        raise ValueError("Комната не найдена.")
+
+    reservation.room_id = room_id
+    reservation.start_datetime = draft.start_at
+    reservation.end_datetime = draft.end_at
+    reservation.purpose = draft.purpose
+
+    await session.execute(
+        delete(ReservationEquipment).where(
+            ReservationEquipment.reservation_id == reservation.reservation_id
+        )
+    )
+    for equipment_id in choose_room_equipment_ids(room, draft.equipment_type_ids):
+        await add_reservation_equipment_link(
+            session,
+            reservation_id=reservation.reservation_id,
+            equipment_id=equipment_id,
+        )
+
+    await session.flush()
     return reservation
 
 
