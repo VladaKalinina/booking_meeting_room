@@ -103,3 +103,13 @@ async def add_room_equipment_link(
     session.add(link)
     await session.flush()
     return link
+
+
+async def delete_room_equipment_link(session: AsyncSession, link: RoomEquipment) -> None:
+    await session.delete(link)
+    await session.flush()
+
+
+async def delete_equipment(session: AsyncSession, equipment: Equipment) -> None:
+    await session.delete(equipment)
+    await session.flush()

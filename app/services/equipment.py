@@ -5,6 +5,8 @@ from app.repositories.equipment import (
     add_equipment,
     add_equipment_type,
     add_room_equipment_link,
+    delete_equipment,
+    delete_room_equipment_link,
     get_equipment_by_id,
     get_equipment_by_part_number,
     get_equipment_type_by_id,
@@ -99,3 +101,37 @@ async def attach_equipment_to_room(
         room_id=room_id,
         equipment_id=equipment_id,
     )
+
+
+async def detach_equipment_from_room(
+    session: AsyncSession,
+    *,
+    room_id: int,
+    equipment_id: int,
+) -> None:
+    room = await get_room_by_id(session, room_id)
+    if not room:
+        raise ValueError("Комната не найдена.")
+
+    equipment = await get_equipment_by_id(session, equipment_id)
+    if not equipment:
+        raise ValueError("Оборудование не найдено.")
+
+    existing_link = await get_room_equipment_link(
+        session,
+        room_id=room_id,
+        equipment_id=equipment_id,
+    )
+    if not existing_link:
+        raise ValueError("Это оборудование не привязано к выбранной комнате.")
+
+    await delete_room_equipment_link(session, existing_link)
+
+
+async def remove_equipment(session: AsyncSession, *, equipment_id: int) -> Equipment:
+    equipment = await get_equipment_by_id(session, equipment_id)
+    if not equipment:
+        raise ValueError("Оборудование не найдено.")
+
+    await delete_equipment(session, equipment)
+    return equipment

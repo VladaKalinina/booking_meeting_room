@@ -13,3 +13,8 @@ class EquipmentCreationState(StatesGroup):
 class EquipmentAttachState(StatesGroup):
     waiting_room_id = State()
     waiting_equipment_id = State()
+
+
+class EquipmentDetachState(StatesGroup):
+    waiting_room_id = State()
+    waiting_equipment_id = State()

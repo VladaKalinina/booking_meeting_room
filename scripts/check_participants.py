@@ -12,7 +12,9 @@ from app.services.participants import (
     ACCEPTED_INVITATION_STATUS_ID,
     add_participants_by_email,
     format_participants,
+    format_user_invitations,
     list_reservation_participants,
+    list_user_invitations,
     parse_participant_emails,
     set_invitation_status,
 )
@@ -81,7 +83,9 @@ async def main() -> None:
                 session,
                 reservation_id=reservation.reservation_id,
             )
+            invitations = await list_user_invitations(session, user=invited)
             assert "Participants Invited" in format_participants(participants)
+            assert "Participants check" in format_user_invitations(invitations)
 
             await session.rollback()
 

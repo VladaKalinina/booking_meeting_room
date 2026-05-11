@@ -46,6 +46,28 @@ async def list_reservation_participants(
     return list(result.scalars().all())
 
 
+async def list_user_invitations(
+    session: AsyncSession,
+    *,
+    user: User,
+) -> list[Participant]:
+    result = await session.execute(
+        select(Participant)
+        .options(
+            selectinload(Participant.invitation_status),
+            selectinload(Participant.reservation).selectinload(Reservation.organizer),
+            selectinload(Participant.reservation).selectinload(Reservation.room),
+        )
+        .join(Reservation, Participant.reservation_id == Reservation.reservation_id)
+        .where(
+            Participant.user_id == user.user_id,
+            Reservation.status_id.in_(ACTIVE_RESERVATION_STATUS_IDS),
+        )
+        .order_by(Reservation.start_datetime, Participant.participant_id)
+    )
+    return list(result.scalars().all())
+
+
 async def add_participants_by_email(
     session: AsyncSession,
     *,
@@ -147,5 +169,24 @@ def format_participants(participants: list[Participant]) -> str:
         lines.append(
             f"#{participant.participant_id}: {participant.user.full_name} "
             f"({participant.user.email}) — {participant.invitation_status.name}"
+        )
+    return "\n".join(lines)
+
+
+def format_user_invitations(invitations: list[Participant]) -> str:
+    if not invitations:
+        return "У вас пока нет активных приглашений."
+
+    lines = ["Ваши приглашения:"]
+    for invitation in invitations:
+        reservation = invitation.reservation
+        start_at = reservation.start_datetime.strftime("%d.%m.%Y %H:%M")
+        end_at = reservation.end_datetime.strftime("%H:%M")
+        lines.append(
+            f"\n#{invitation.participant_id}: {start_at}-{end_at}\n"
+            f"Комната: {reservation.room.name}\n"
+            f"Организатор: {reservation.organizer.full_name}\n"
+            f"Цель: {reservation.purpose}\n"
+            f"Статус: {invitation.invitation_status.name}"
         )
     return "\n".join(lines)
