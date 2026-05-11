@@ -98,6 +98,32 @@ docker compose down
 docker compose down -v
 ```
 
+## CI/CD
+
+В репозитории настроен GitHub Actions workflow:
+
+```text
+.github/workflows/ci-cd.yml
+```
+
+Он выполняет:
+
+- установку Python-зависимостей;
+- запуск PostgreSQL service container;
+- применение миграций Alembic;
+- `python scripts/check_all.py`;
+- сборку Docker-образа;
+- публикацию образа в GitHub Container Registry на push в default branch.
+
+Опубликованный образ будет доступен в GHCR:
+
+```text
+ghcr.io/<owner>/<repo>:latest
+ghcr.io/<owner>/<repo>:sha-<commit>
+```
+
+Для публикации дополнительных секретов не нужно: используется встроенный `GITHUB_TOKEN`.
+
 ## База данных
 
 Применить миграции:
