@@ -186,6 +186,12 @@ python scripts/check_booking.py
 python scripts/check_booking_edit.py
 ```
 
+Проверить автоматическое завершение прошедших бронирований:
+
+```powershell
+python scripts/check_completed_reservations.py
+```
+
 Проверить список и отмену своих бронирований:
 
 ```powershell
@@ -220,6 +226,12 @@ python scripts/check_user_management.py
 
 ```powershell
 python scripts/set_admin.py <telegram_id_or_email> true
+```
+
+Если проект запущен в Docker:
+
+```powershell
+docker compose exec bot python scripts/set_admin.py <telegram_id_or_email> true
 ```
 
 Проверить админскую аналитику:

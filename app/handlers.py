@@ -677,17 +677,25 @@ async def start(message: Message, session: AsyncSession, state: FSMContext) -> N
 
 @router.message(Command("cancel"))
 @router.message(F.text == CANCEL_TEXT)
-async def cancel_scenario(message: Message, state: FSMContext) -> None:
+async def cancel_scenario(
+    message: Message,
+    session: AsyncSession,
+    state: FSMContext,
+) -> None:
     current_state = await state.get_state()
     await state.clear()
+    user = await get_current_user(message, session)
 
     if current_state:
         await message.answer(
-            "Сценарий отменён. Чтобы начать заново, отправьте /start.",
-            reply_markup=ReplyKeyboardRemove(),
+            "Сценарий отменён. Выберите действие в меню.",
+            reply_markup=main_menu_keyboard(is_admin=bool(user and user.is_admin)),
         )
     else:
-        await message.answer("Активного сценария нет. Отправьте /start.")
+        await message.answer(
+            "Активного сценария нет. Выберите действие в меню.",
+            reply_markup=main_menu_keyboard(is_admin=bool(user and user.is_admin)),
+        )
 
 
 @router.message(RegistrationState.waiting_full_name)

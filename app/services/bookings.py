@@ -1,7 +1,7 @@
 from dataclasses import dataclass
 from datetime import date, datetime, time
 
-from sqlalchemy import delete
+from sqlalchemy import delete, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models import Reservation, ReservationEquipment, Room, User
@@ -20,6 +20,7 @@ from app.services.schedule import LOCAL_TIMEZONE
 
 CONFIRMED_STATUS_ID = 1
 CANCELED_STATUS_ID = 3
+COMPLETED_STATUS_ID = 4
 
 
 @dataclass(frozen=True)
@@ -71,6 +72,19 @@ def validate_booking_time(start_at: datetime, end_at: datetime) -> None:
         raise ValueError("Время окончания должно быть позже времени начала.")
 
 
+async def complete_finished_reservations(session: AsyncSession) -> int:
+    result = await session.execute(
+        update(Reservation)
+        .where(
+            Reservation.status_id.in_(ACTIVE_RESERVATION_STATUS_IDS),
+            Reservation.end_datetime < datetime.now(LOCAL_TIMEZONE),
+        )
+        .values(status_id=COMPLETED_STATUS_ID)
+    )
+    await session.flush()
+    return result.rowcount or 0
+
+
 def room_has_required_equipment(room: Room, equipment_type_ids: list[int]) -> bool:
     room_equipment_type_ids = {item.type_id for item in room.equipment_items}
     return set(equipment_type_ids).issubset(room_equipment_type_ids)
@@ -95,6 +109,7 @@ async def get_available_rooms(
     equipment_type_ids: list[int],
     exclude_reservation_id: int | None = None,
 ) -> list[Room]:
+    await complete_finished_reservations(session)
     validate_booking_time(start_at, end_at)
     validate_capacity(capacity)
 
@@ -187,6 +202,7 @@ async def update_booking(
     room_id: int,
     draft: BookingDraft,
 ) -> Reservation:
+    await complete_finished_reservations(session)
     reservation = await get_reservation_by_id(session, reservation_id)
     if not reservation:
         raise ValueError("Бронирование не найдено.")
@@ -237,6 +253,7 @@ async def get_my_active_reservations(
     *,
     organizer: User,
 ) -> list[Reservation]:
+    await complete_finished_reservations(session)
     return await list_active_reservations_by_organizer(session, organizer.user_id)
 
 
@@ -246,6 +263,7 @@ async def cancel_own_reservation(
     organizer: User,
     reservation_id: int,
 ) -> Reservation:
+    await complete_finished_reservations(session)
     reservation = await get_reservation_by_id(session, reservation_id)
     if not reservation:
         raise ValueError("Бронирование не найдено.")
@@ -260,6 +278,7 @@ async def cancel_own_reservation(
 
 
 async def get_all_reservations(session: AsyncSession) -> list[Reservation]:
+    await complete_finished_reservations(session)
     return await list_all_reservations(session)
 
 
@@ -268,6 +287,7 @@ async def cancel_any_reservation(
     *,
     reservation_id: int,
 ) -> Reservation:
+    await complete_finished_reservations(session)
     reservation = await get_reservation_by_id(session, reservation_id)
     if not reservation:
         raise ValueError("Бронирование не найдено.")
