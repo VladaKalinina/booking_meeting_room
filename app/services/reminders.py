@@ -7,7 +7,7 @@ from aiogram import Bot
 
 from app.db.session import async_session_factory
 from app.repositories.reservations import ACTIVE_RESERVATION_STATUS_IDS
-from app.services.bookings import get_all_reservations
+from app.services.bookings import complete_finished_reservations, get_all_reservations
 from app.services.participants import ACCEPTED_INVITATION_STATUS_ID
 from app.services.schedule import LOCAL_TIMEZONE
 
@@ -47,6 +47,9 @@ async def run_reminder_loop(bot: Bot) -> None:
         try:
             now = datetime.now(LOCAL_TIMEZONE)
             async with async_session_factory() as session:
+                completed_count = await complete_finished_reservations(session)
+                if completed_count:
+                    await session.commit()
                 reservations = await get_all_reservations(session)
 
             for reservation in reservations:
