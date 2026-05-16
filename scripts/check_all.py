@@ -15,6 +15,7 @@ CHECKS = [
     [sys.executable, "scripts/check_equipment.py"],
     [sys.executable, "scripts/check_schedule.py"],
     [sys.executable, "scripts/check_booking.py"],
+    [sys.executable, "scripts/check_calendar_invite.py"],
     [sys.executable, "scripts/check_booking_edit.py"],
     [sys.executable, "scripts/check_completed_reservations.py"],
     [sys.executable, "scripts/check_my_reservations.py"],

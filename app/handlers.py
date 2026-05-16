@@ -2,6 +2,7 @@ from aiogram import F, Router
 from aiogram.filters import Command, CommandStart
 from aiogram.fsm.context import FSMContext
 from aiogram.types import (
+    BufferedInputFile,
     CallbackQuery,
     InlineKeyboardButton,
     InlineKeyboardMarkup,
@@ -13,6 +14,7 @@ from aiogram.types import (
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.repositories.users import get_user_by_telegram_id
+from app.repositories.reservations import get_reservation_by_id
 from app.services.analytics import format_admin_analytics, get_admin_analytics
 from app.services.bookings import (
     BookingDraft,
@@ -27,6 +29,12 @@ from app.services.bookings import (
     parse_time,
     update_booking,
     validate_booking_time,
+)
+from app.services.calendar_invites import (
+    build_google_calendar_url,
+    build_outlook_calendar_url,
+    build_reservation_ics,
+    reservation_ics_filename,
 )
 from app.services.equipment import (
     attach_equipment_to_room,
@@ -108,6 +116,7 @@ RESERVATION_PARTICIPANTS_PREFIX = "reservation:participants:"
 ADMIN_RESERVATION_CANCEL_PREFIX = "admin:reservation:cancel:"
 INVITATION_ACCEPT_PREFIX = "invitation:accept:"
 INVITATION_DECLINE_PREFIX = "invitation:decline:"
+CALENDAR_APPLE_PREFIX = "calendar:apple:"
 USER_ADMIN_SET_PREFIX = "users:admin:set:"
 USER_ADMIN_UNSET_PREFIX = "users:admin:unset:"
 
@@ -372,6 +381,61 @@ def invitation_response_keyboard(participant_id: int) -> InlineKeyboardMarkup:
     )
 
 
+def calendar_links_keyboard(reservation) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="Google Calendar",
+                    url=build_google_calendar_url(reservation),
+                ),
+                InlineKeyboardButton(
+                    text="Outlook",
+                    url=build_outlook_calendar_url(reservation),
+                ),
+            ],
+            [
+                InlineKeyboardButton(
+                    text="Apple Calendar",
+                    callback_data=f"{CALENDAR_APPLE_PREFIX}{reservation.reservation_id}",
+                ),
+            ]
+        ]
+    )
+
+
+async def send_reservation_calendar_file(target, reservation) -> None:
+    await target.answer_document(
+        BufferedInputFile(
+            build_reservation_ics(reservation),
+            filename=reservation_ics_filename(reservation),
+        ),
+        caption=(
+            "Добавить встречу в календарь:\n"
+            "Google/Outlook — кнопкой ниже.\n"
+            "Apple Calendar — откройте .ics-файл."
+        ),
+        reply_markup=calendar_links_keyboard(reservation),
+    )
+
+
+async def send_reservation_calendar_file_to_chat(bot, chat_id: int, reservation) -> None:
+    await bot.send_document(
+        chat_id,
+        BufferedInputFile(
+            build_reservation_ics(reservation),
+            filename=reservation_ics_filename(reservation),
+        ),
+        caption=(
+            "Добавить встречу в календарь:\n"
+            "Google/Outlook — кнопкой ниже.\n"
+            "Apple Calendar — откройте .ics-файл."
+        ),
+        reply_markup=calendar_links_keyboard(reservation),
+    )
+
+
+
 def invitations_keyboard(invitations) -> InlineKeyboardMarkup | None:
     pending_invitations = [
         invitation
@@ -542,6 +606,15 @@ async def get_own_active_reservation_or_none(session: AsyncSession, user, reserv
 async def notify_reservation_participants(bot, reservation, text: str) -> None:
     for participant in reservation.participants:
         await bot.send_message(participant.user.telegram_id, text)
+
+
+async def send_calendar_file_to_reservation_participants(bot, reservation) -> None:
+    for participant in reservation.participants:
+        await send_reservation_calendar_file_to_chat(
+            bot,
+            participant.user.telegram_id,
+            reservation,
+        )
 
 
 def all_reservations_keyboard(reservations) -> InlineKeyboardMarkup | None:
@@ -1061,6 +1134,7 @@ async def confirm_booking_room(
             f"Время: {draft.start_at.strftime('%H:%M')}-{draft.end_at.strftime('%H:%M')}",
             reply_markup=main_menu_keyboard(is_admin=user.is_admin),
         )
+        await send_reservation_calendar_file(callback.message, reservation)
 
 
 @router.message(F.text == MY_RESERVATIONS_TEXT)
@@ -1671,6 +1745,7 @@ async def confirm_booking_edit_room(
         reservation,
         format_reservation_changed_message(reservation),
     )
+    await send_calendar_file_to_reservation_participants(callback.bot, reservation)
 
     await state.clear()
     await callback.answer("Бронирование изменено.")
@@ -1763,6 +1838,11 @@ async def process_participant_emails(
             format_invitation_message(reservation),
             reply_markup=invitation_response_keyboard(participant.participant_id),
         )
+        await send_reservation_calendar_file_to_chat(
+            message.bot,
+            participant.user.telegram_id,
+            reservation,
+        )
 
     lines = [f"Добавлено участников: {len(result.added)}."]
     if result.already_invited:
@@ -1818,6 +1898,29 @@ async def respond_to_invitation(
     await callback.answer("Ответ сохранён.")
     if callback.message:
         await callback.message.edit_reply_markup(reply_markup=None)
+
+
+@router.callback_query(F.data.startswith(CALENDAR_APPLE_PREFIX))
+async def send_apple_calendar_file(
+    callback: CallbackQuery,
+    session: AsyncSession,
+) -> None:
+    reservation_id_text = callback.data.removeprefix(CALENDAR_APPLE_PREFIX) if callback.data else ""
+    if not reservation_id_text.isdigit():
+        await callback.answer("Некорректное бронирование.", show_alert=True)
+        return
+
+    reservation = await get_reservation_by_id(session, int(reservation_id_text))
+    if not reservation:
+        await callback.answer("Бронирование не найдено.", show_alert=True)
+        return
+
+    await callback.answer("Откройте .ics-файл в Apple Calendar.", show_alert=True)
+    await send_reservation_calendar_file_to_chat(
+        callback.bot,
+        callback.from_user.id,
+        reservation,
+    )
 
 
 @router.callback_query(F.data.startswith(RESERVATION_CANCEL_PREFIX))

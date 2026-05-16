@@ -183,6 +183,7 @@ async def create_booking(
         end_datetime=draft.end_at,
         purpose=draft.purpose,
     )
+    reservation.room = room
 
     for equipment_id in choose_room_equipment_ids(room, draft.equipment_type_ids):
         await add_reservation_equipment_link(
